@@ -1,5 +1,5 @@
 // Tạo index cho MongoDB. Chạy một lần: npm run db:indexes
-import "dotenv/config";
+import "./env";
 import { MongoClient } from "mongodb";
 
 const client = new MongoClient(process.env.MONGODB_URI!);

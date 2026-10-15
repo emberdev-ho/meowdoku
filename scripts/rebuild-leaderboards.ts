@@ -1,6 +1,6 @@
 // Dựng lại toàn bộ bảng xếp hạng trên Redis từ MongoDB.
 // Dùng khi Redis mất dữ liệu hoặc khi đổi sang Redis mới: npm run lb:rebuild
-import "dotenv/config";
+import "./env";
 import { MongoClient } from "mongodb";
 import { Redis } from "@upstash/redis";
 
