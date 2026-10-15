@@ -45,4 +45,5 @@ export type User = {
 
 export type LeaderEntry = { rank: number; userId: string; name: string; score: number };
 
-export type PublicLevel = { id: number; size: number; diff: number; grid: string };
+/** regions: chuỗi vùng màu (xem src/lib/puzzle.ts); given: ô có mèo cho sẵn; diff: kỹ thuật khó nhất cần dùng (1–4). */
+export type PublicLevel = { id: number; size: number; diff: number; regions: string; given: number[] };

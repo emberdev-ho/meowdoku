@@ -17,6 +17,19 @@
   --bad: #ffd3dc;
   --bad-ink: #b3123f;
   --good: #23885e;
+  /* Màu 10 vùng trên bàn; ranh giới vùng luôn được kẻ đậm nên không chỉ dựa vào màu. */
+  --r0: #f7b2a5;
+  --r1: #f9d77e;
+  --r2: #b5df9a;
+  --r3: #93d6cb;
+  --r4: #a6c6f2;
+  --r5: #c8b4ef;
+  --r6: #f3add0;
+  --r7: #e6c49e;
+  --r8: #d6e68c;
+  --r9: #bcc4da;
+  --cell-line: rgba(35, 38, 77, 0.14);
+  --mark: rgba(35, 38, 77, 0.55);
   color-scheme: light;
 }
 
@@ -38,6 +51,18 @@
     --bad: #6b2a40;
     --bad-ink: #ffb3c6;
     --good: #5fd3a0;
+    --r0: #8f4a3f;
+    --r1: #8a7330;
+    --r2: #4f7a3c;
+    --r3: #2f7a70;
+    --r4: #3b5f94;
+    --r5: #6a5598;
+    --r6: #8f4670;
+    --r7: #85663f;
+    --r8: #6c7a2a;
+    --r9: #4f5873;
+    --cell-line: rgba(0, 0, 0, 0.28);
+    --mark: rgba(232, 234, 247, 0.7);
     color-scheme: dark;
   }
 }

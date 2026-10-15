@@ -5,9 +5,11 @@ import { CatIcon } from "@/components/CatIcon";
 import { useSession } from "@/components/SessionProvider";
 import { api, type User } from "@/lib/client";
 import { LEVEL_COUNT } from "@/lib/config";
+import { parseRegions } from "@/lib/puzzle";
 
-// Lưới 4x4 hợp lệ để trang trí.
-const SAMPLE = [1, 2, 3, 4, 3, 4, 1, 2, 2, 1, 4, 3, 4, 3, 2, 1];
+// Bàn 5×5 đã giải để trang trí: vùng màu theo từng ô và vị trí 5 con mèo.
+const SAMPLE_REGIONS = parseRegions("0001120111223312333422344");
+const SAMPLE_CATS = [1, 8, 10, 17, 24];
 
 export default function Home() {
   const { user } = useSession();
@@ -18,7 +20,7 @@ export default function Home() {
       <section>
         <h1 className="text-[clamp(3rem,11vw,6.5rem)] leading-[0.9] font-black tracking-[-0.04em]">Meowdoku</h1>
         <p className="mt-4 max-w-[34ch] text-lg text-ink-soft">
-          Sudoku với mèo thay cho số: mỗi hàng, mỗi cột và mỗi khối có đủ các chú mèo, không con nào trùng.
+          Đặt mèo vào bàn chia vùng màu: mỗi hàng, mỗi cột và mỗi vùng có đúng một con mèo, và không con nào đứng sát con nào, kể cả chéo góc.
         </p>
 
         <div className="mt-7 flex flex-wrap gap-3">
@@ -40,20 +42,27 @@ export default function Home() {
       </section>
 
       <div className="mx-auto w-full max-w-sm rotate-2" aria-hidden>
-        <div className="grid grid-cols-4 overflow-hidden rounded-2xl border-[3px] border-grid-bold bg-card">
-          {SAMPLE.map((v, i) => {
-            const c = i % 4;
-            const r = Math.floor(i / 4);
+        <div className="grid grid-cols-5 overflow-hidden rounded-2xl border-[3px] border-grid-bold">
+          {SAMPLE_REGIONS.map((g, i) => {
+            const c = i % 5;
+            const r = Math.floor(i / 5);
+            const edgeRight = c < 4 && SAMPLE_REGIONS[i + 1] !== g;
+            const edgeBottom = r < 4 && SAMPLE_REGIONS[i + 5] !== g;
             return (
               <div
                 key={i}
-                className={`aspect-square p-[10%] ${(r + c) % 3 === 0 ? "bg-given" : ""}`}
+                className="relative aspect-square"
                 style={{
-                  borderRight: c < 3 ? `${c === 1 ? 3 : 1}px solid var(${c === 1 ? "--grid-bold" : "--grid-thin"})` : undefined,
-                  borderBottom: r < 3 ? `${r === 1 ? 3 : 1}px solid var(${r === 1 ? "--grid-bold" : "--grid-thin"})` : undefined,
+                  background: `var(--r${g})`,
+                  borderRight: c < 4 ? (edgeRight ? "3px solid var(--grid-bold)" : "1px solid var(--cell-line)") : undefined,
+                  borderBottom: r < 4 ? (edgeBottom ? "3px solid var(--grid-bold)" : "1px solid var(--cell-line)") : undefined,
                 }}
               >
-                <CatIcon value={v} className="h-full w-full" label="" />
+                {SAMPLE_CATS.includes(i) && (
+                  <span className="absolute inset-[10%] grid place-items-center rounded-full bg-card shadow-[0_2px_0_rgba(0,0,0,0.2)]">
+                    <CatIcon value={SAMPLE_CATS.indexOf(i) + 1} className="h-[88%] w-[88%]" label="" />
+                  </span>
+                )}
               </div>
             );
           })}
@@ -64,7 +73,7 @@ export default function Home() {
 }
 
 function Profile({ user }: { user: User }) {
-  const { setUser, showDigits, setShowDigits } = useSession();
+  const { setUser } = useSession();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user.name);
   const [error, setError] = useState<string | null>(null);
@@ -118,10 +127,6 @@ function Profile({ user }: { user: User }) {
         <Stat label="Điểm đấu" value={user.pvpRating} />
       </dl>
 
-      <label className="mt-4 flex items-center gap-2 text-sm font-semibold text-ink-soft">
-        <input type="checkbox" checked={showDigits} onChange={(e) => setShowDigits(e.target.checked)} className="h-4 w-4 accent-[var(--yarn)]" />
-        Hiện số cạnh mỗi chú mèo
-      </label>
     </div>
   );
 }

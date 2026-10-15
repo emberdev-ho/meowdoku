@@ -7,24 +7,24 @@ type Session = {
   error: string | null;
   refresh: () => Promise<void>;
   setUser: (u: User) => void;
-  showDigits: boolean;
-  setShowDigits: (v: boolean) => void;
 };
 
 const Ctx = createContext<Session | null>(null);
 
+// Chỉ gọi /api/session một lần mỗi lần tải trang. Nếu gọi hai lần song song (React
+// StrictMode chạy effect hai lần) thì lần đầu vào game server tạo ra hai tài khoản khách,
+// cookie bị ghi đè và vé chơi cấp cho tài khoản kia không còn hợp lệ.
+let sessionRequest: Promise<User> | null = null;
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showDigits, setShowDigitsState] = useState(true);
 
   useEffect(() => {
-    api<User>("/api/session", { method: "POST" })
+    sessionRequest ??= api<User>("/api/session", { method: "POST" });
+    sessionRequest
       .then(setUser)
       .catch((e: Error) => setError(e.message));
-    try {
-      if (localStorage.getItem("md_digits") === "0") setShowDigitsState(false);
-    } catch {}
   }, []);
 
   const refresh = useCallback(async () => {
@@ -33,14 +33,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } catch {}
   }, []);
 
-  const setShowDigits = (v: boolean) => {
-    setShowDigitsState(v);
-    try {
-      localStorage.setItem("md_digits", v ? "1" : "0");
-    } catch {}
-  };
-
-  return <Ctx.Provider value={{ user, error, refresh, setUser, showDigits, setShowDigits }}>{children}</Ctx.Provider>;
+  return <Ctx.Provider value={{ user, error, refresh, setUser }}>{children}</Ctx.Provider>;
 }
 
 export function useSession(): Session {

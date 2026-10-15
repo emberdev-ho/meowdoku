@@ -6,6 +6,8 @@ import { Stars } from "@/components/Stars";
 import { api, formatTime, type User } from "@/lib/client";
 import { CHUNK_COUNT, CHUNK_SIZE, LEVEL_COUNT, chunkOf, sizeForLevel } from "@/lib/config";
 
+const sizeLabel = (n: number) => `${n}×${n}`;
+
 type Progress = { maxLevel: number; results: { levelId: number; stars: number; bestTime: number }[] };
 
 export default function LevelMap() {
@@ -26,7 +28,7 @@ function LevelGrid({ user }: { user: User }) {
 
   const from = chunk * CHUNK_SIZE + 1;
   const to = Math.min(LEVEL_COUNT, from + CHUNK_SIZE - 1);
-  const size = sizeForLevel(from);
+  const sizes = [...new Set(Array.from({ length: to - from + 1 }, (_, k) => sizeForLevel(from + k)))];
   const byId = new Map(progress?.results.map((r) => [r.levelId, r]));
   const maxLevel = progress?.maxLevel ?? user.maxLevel;
 
@@ -38,7 +40,8 @@ function LevelGrid({ user }: { user: User }) {
             Màn {from}–{to}
           </h1>
           <p className="text-ink-soft">
-            Bàn {size}×{size}. Đã qua {user.levelsCleared}/{LEVEL_COUNT} màn.
+            Bàn {sizes.length > 1 ? `${sizeLabel(sizes[0])} đến ${sizeLabel(sizes[sizes.length - 1])}` : sizeLabel(sizes[0])}. Đã qua{" "}
+            {user.levelsCleared}/{LEVEL_COUNT} màn.
           </p>
         </div>
         <div className="flex items-center gap-2">

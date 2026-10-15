@@ -1,12 +1,13 @@
-// Đọc dữ liệu màn có đáp án từ thư mục data/ (không public).
+// Đọc dữ liệu màn có lời giải từ thư mục data/ (không public).
 // next.config.ts khai báo outputFileTracingIncludes để Vercel đóng gói thư mục này.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chunkFile, chunkOf, isValidLevelId } from "../config";
 import { ApiError } from "./http";
 
-export type ServerPuzzle = { id: string; size: number; grid: string; solution: string };
-export type ServerLevel = { id: number; size: number; diff: number; grid: string; solution: string };
+/** regions: chuỗi vùng màu; given: ô có mèo cho sẵn; solution: ô có mèo trong lời giải (tăng dần). */
+export type ServerPuzzle = { id: string; size: number; regions: string; given: number[]; solution: number[] };
+export type ServerLevel = { id: number; size: number; diff: number; regions: string; given: number[]; solution: number[] };
 
 const chunkCache = new Map<number, Promise<ServerLevel[]>>();
 let roomsCache: Promise<{ pvp: ServerPuzzle[]; coop: ServerPuzzle[] }> | null = null;
@@ -49,8 +50,10 @@ export async function getRoomPuzzle(id: string): Promise<ServerPuzzle> {
   return p;
 }
 
-export function countEmpties(grid: string): number {
-  let n = 0;
-  for (const ch of grid) if (ch === "0") n++;
-  return n;
+/** Danh sách ô có mèo do client gửi lên: mảng số nguyên trong bàn, không trùng, đã sắp xếp. */
+export function readCats(raw: unknown, size: number): number[] {
+  if (!Array.isArray(raw) || raw.length > size * size) throw new ApiError(400, "Danh sách mèo không hợp lệ.");
+  const cats = raw.map(Number);
+  if (cats.some((c) => !Number.isInteger(c) || c < 0 || c >= size * size)) throw new ApiError(400, "Danh sách mèo không hợp lệ.");
+  return [...new Set(cats)].sort((a, b) => a - b);
 }

@@ -1,6 +1,17 @@
 # Meowdoku
 
-Sudoku với mèo thay cho số. Gồm 3000 màn chơi đơn, bảng xếp hạng, đấu 1-1 (PvP) và chơi cùng bạn (co-op).
+Game đặt mèo vào bàn chia vùng màu. Gồm 100 màn chơi đơn, bảng xếp hạng, đấu 1-1 (PvP) và chơi cùng bạn (co-op).
+
+## Luật chơi
+
+Bàn N×N chia thành N vùng màu. Người chơi đặt N con mèo sao cho:
+
+- mỗi hàng, mỗi cột và mỗi vùng màu có đúng một con mèo;
+- hai con mèo không đứng sát nhau, kể cả chéo góc.
+
+Bấm một ô lần lượt đổi trống → X (đánh dấu không có mèo) → mèo → trống; kéo qua nhiều ô để đánh X nhanh. Ở chơi đơn, đặt mèo vi phạm luật sẽ mất một tim (có 3 tim). Mọi đề đều giải được hoàn toàn bằng suy luận, không cần đoán, nên chắc chắn chỉ có một lời giải.
+
+Màn 1–15 là bàn 5×5 (5 màn đầu có sẵn một con mèo khóa), màn 16–50 là 6×6, màn 51–100 là 7×7. PvP dùng bàn 7×7, co-op dùng bàn 8×8.
 
 Stack: **Next.js 16 + TypeScript + Tailwind 4**, **MongoDB** (tự quản), **Upstash Redis**. Ứng dụng chạy được trên Vercel.
 
@@ -93,8 +104,8 @@ Các bước:
 
 | Dữ liệu | Nơi lưu | Ghi chú |
 |---|---|---|
-| Đề của 3000 màn | `public/levels/*.json` | Chia 30 gói × 100 màn, phục vụ qua CDN, **không có đáp án** |
-| Đáp án | `data/levels/*.json`, `data/rooms.json` | Chỉ server đọc; `next.config.ts` đóng gói thư mục này vào các API |
+| Đề của các màn | `public/levels/*.json` | Mỗi gói 100 màn (vùng màu và mèo cho sẵn), phục vụ qua CDN, **không có lời giải** |
+| Lời giải | `data/levels/*.json`, `data/rooms.json` | Chỉ server đọc; `next.config.ts` đóng gói thư mục này vào các API |
 | Người chơi, kết quả, trận đấu | MongoDB: `users`, `results`, `matches` | Nguồn dữ liệu gốc |
 | Bảng xếp hạng | Redis sorted set: `lb:level:{id}`, `lb:global`, `lb:pvp` | Mất dữ liệu thì chạy `npm run lb:rebuild` |
 | Phòng PvP/co-op, hàng chờ | Redis: `room:*`, `mm:*` | Tự hết hạn sau 2 giờ |
@@ -102,8 +113,8 @@ Các bước:
 ## Chống gian lận
 
 - Khi người chơi mở màn, server cấp một **vé chơi** (JWT) ghi giờ bắt đầu và số gợi ý đã dùng. Thời gian giải được tính theo đồng hồ server.
-- Server so lời giải với đáp án và từ chối nếu giải nhanh hơn 0,4 giây mỗi ô trống.
-- Ở PvP và co-op, server kiểm tra từng nước đi và client không bao giờ nhận đáp án. Để chặn đoán mò, PvP thua khi sai 3 lần, co-op thua khi cả nhóm sai 5 lần.
+- Server so vị trí các con mèo với lời giải và từ chối nếu giải nhanh hơn 0,5 giây mỗi con mèo cần đặt. Tim chỉ kiểm tra luật ngay trên máy người chơi, không ảnh hưởng tới số sao.
+- Ở PvP và co-op, server kiểm tra từng con mèo đặt xuống và client không bao giờ nhận lời giải. Để chặn đoán mò, PvP thua khi sai 3 lần, co-op thua khi cả nhóm sai 5 lần. Dấu X chỉ nằm ở máy người chơi.
 - Ghép trận chạy bằng một script Lua nguyên tử trên Redis, nên một người không bao giờ bị ghép vào hai trận. Kết thúc trận dùng khóa `SET NX`, nên kết quả chỉ được ghi một lần.
 
 ## Giới hạn hiện tại và hướng nâng cấp
@@ -116,7 +127,7 @@ Các bước:
 
 ```
 scripts/
-  generate-levels.ts      Sinh 3000 màn và kho đề PvP/co-op (có seed, chạy lại ra giống hệt)
+  generate-levels.ts      Sinh các màn và kho đề PvP/co-op (có seed, chạy lại ra giống hệt)
   create-indexes.ts       Tạo index MongoDB
   rebuild-leaderboards.ts Dựng lại bảng xếp hạng Redis từ MongoDB
   env.ts                  Nạp .env.local rồi .env cho các script (giống Next.js)
@@ -127,7 +138,7 @@ deploy/mongo/
   renew-hook.sh           Hook certbot: cập nhật chứng chỉ cho mongod
   backup.sh               Sao lưu hằng ngày bằng mongodump
 src/lib/
-  sudoku.ts               Bộ giải, bộ sinh đề, kiểm tra xung đột (dùng chung client/server)
+  puzzle.ts               Luật, bộ giải bằng suy luận, bộ sinh vùng màu (dùng chung client/server)
   config.ts               Số màn, luật tính sao, thông số PvP/co-op
   server/                 Code chỉ chạy trên server: auth, mongo, redis, leaderboard, rooms, matchmaking
 src/app/
@@ -139,5 +150,6 @@ src/app/
 
 ## Đổi luật
 
-- **Số sao, thời gian chuẩn, giới hạn PvP/co-op:** sửa trong `src/lib/config.ts`.
-- **Độ khó và phân bổ kích thước bàn:** sửa `LEVEL_BANDS` trong `config.ts` và `GIVENS` trong `scripts/generate-levels.ts`, rồi chạy lại `npm run levels:generate`. Lưu ý: đổi luật sẽ làm thay đổi đề của các màn, nên kỷ lục cũ không còn so sánh được. Khi đó hãy tăng `PACK_VERSION`.
+- **Số tim, số sao, thời gian chuẩn, giới hạn PvP/co-op:** sửa trong `src/lib/config.ts`.
+- **Thêm màn:** tăng `LEVEL_COUNT` và thêm dải mới vào cuối `LEVEL_BANDS` trong `config.ts`, rồi chạy `npm run levels:generate`. Mỗi màn chỉ phụ thuộc vào số thứ tự của nó, nên các màn cũ giữ nguyên. Bộ sinh hiện chạy nhanh tới bàn 8×8; bàn 9×9 trở lên cần cải tiến bộ sinh vùng (`growRegions` trong `src/lib/puzzle.ts`) vì tỉ lệ ra đề hợp lệ rất thấp.
+- **Đổi độ khó hoặc dải đã có:** sửa `LEVEL_BANDS`, `givensForLevel` hoặc `CANDIDATES` trong `scripts/generate-levels.ts` rồi sinh lại. Việc này làm đổi các màn cũ nên kỷ lục cũ không còn so sánh được; khi đó hãy tăng `PACK_VERSION`.

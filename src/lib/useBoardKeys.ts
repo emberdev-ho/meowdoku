@@ -5,21 +5,26 @@ type Handlers = {
   size: number;
   selected: number | null;
   setSelected: (i: number) => void;
-  onInput: (v: number) => void;
-  onErase?: () => void;
+  /** Giống bấm vào ô: trống → X → mèo → trống. */
+  onTap: () => void;
+  onToggleMark?: () => void;
+  onPlace?: () => void;
+  onClear?: () => void;
   onUndo?: () => void;
-  onToggleNotes?: () => void;
   enabled?: boolean;
 };
 
-/** Điều khiển bằng bàn phím: 1–9 đặt mèo, mũi tên di chuyển, Backspace xóa, N ghi chú, Ctrl+Z hoàn tác. */
+/**
+ * Điều khiển bằng bàn phím: mũi tên di chuyển, Space như bấm vào ô, Enter đặt/gỡ mèo,
+ * X đánh dấu, Backspace xóa ô, Ctrl+Z hoàn tác.
+ */
 export function useBoardKeys(h: Handlers) {
   const ref = useRef(h);
   ref.current = h;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { size, selected, setSelected, onInput, onErase, onUndo, onToggleNotes, enabled = true } = ref.current;
+      const { size, selected, setSelected, onTap, onToggleMark, onPlace, onClear, onUndo, enabled = true } = ref.current;
       if (!enabled) return;
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
@@ -31,21 +36,6 @@ export function useBoardKeys(h: Handlers) {
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-      const n = Number(e.key);
-      if (Number.isInteger(n) && n >= 1 && n <= size) {
-        e.preventDefault();
-        onInput(n);
-        return;
-      }
-      if (e.key === "Backspace" || e.key === "Delete" || e.key === "0") {
-        e.preventDefault();
-        onErase?.();
-        return;
-      }
-      if (e.key.toLowerCase() === "n") {
-        onToggleNotes?.();
-        return;
-      }
       const moves: Record<string, [number, number]> = {
         ArrowUp: [-1, 0],
         ArrowDown: [1, 0],
@@ -59,6 +49,21 @@ export function useBoardKeys(h: Handlers) {
         const r = (Math.floor(cur / size) + mv[0] + size) % size;
         const c = ((cur % size) + mv[1] + size) % size;
         setSelected(r * size + c);
+        return;
+      }
+      // Các phím còn lại chỉ có tác dụng khi bàn đã có ô được chọn và không đang bấm nút khác.
+      if (selected === null || target.tagName === "BUTTON" || target.tagName === "A" || target.tagName === "SELECT") return;
+      if (e.key === " ") {
+        e.preventDefault();
+        onTap();
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        onPlace?.();
+      } else if (e.key.toLowerCase() === "x") {
+        onToggleMark?.();
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        onClear?.();
       }
     };
     window.addEventListener("keydown", onKey);
