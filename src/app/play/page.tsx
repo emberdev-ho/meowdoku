@@ -4,9 +4,12 @@ import { useEffect, useState } from "react";
 import { RequireUser } from "@/components/SessionProvider";
 import { Stars } from "@/components/Stars";
 import { api, formatTime, type User } from "@/lib/client";
-import { CHUNK_COUNT, CHUNK_SIZE, LEVEL_COUNT, chunkOf, sizeForLevel } from "@/lib/config";
+import { CHUNK_COUNT, CHUNK_SIZE, LEVEL_COUNT, chunkOf, levelSpec } from "@/lib/config";
 
-const sizeLabel = (n: number) => `${n}×${n}`;
+const sizeLabel = (id: number) => {
+  const s = levelSpec(id);
+  return `${s.rows}×${s.cols}`;
+};
 
 type Progress = { maxLevel: number; results: { levelId: number; stars: number; bestTime: number }[] };
 
@@ -28,7 +31,7 @@ function LevelGrid({ user }: { user: User }) {
 
   const from = chunk * CHUNK_SIZE + 1;
   const to = Math.min(LEVEL_COUNT, from + CHUNK_SIZE - 1);
-  const sizes = [...new Set(Array.from({ length: to - from + 1 }, (_, k) => sizeForLevel(from + k)))];
+  const sizes = [...new Set(Array.from({ length: to - from + 1 }, (_, k) => sizeLabel(from + k)))];
   const byId = new Map(progress?.results.map((r) => [r.levelId, r]));
   const maxLevel = progress?.maxLevel ?? user.maxLevel;
 
@@ -40,7 +43,7 @@ function LevelGrid({ user }: { user: User }) {
             Màn {from}–{to}
           </h1>
           <p className="text-ink-soft">
-            Bàn {sizes.length > 1 ? `${sizeLabel(sizes[0])} đến ${sizeLabel(sizes[sizes.length - 1])}` : sizeLabel(sizes[0])}. Đã qua{" "}
+            Bàn {sizes.length > 1 ? `${sizes[0]} đến ${sizes[sizes.length - 1]}` : sizes[0]}. Đã qua{" "}
             {user.levelsCleared}/{LEVEL_COUNT} màn.
           </p>
         </div>

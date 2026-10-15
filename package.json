@@ -8,7 +8,6 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "levels:generate": "tsx scripts/generate-levels.ts",
     "db:indexes": "tsx scripts/create-indexes.ts",
     "lb:rebuild": "tsx scripts/rebuild-leaderboards.ts"
   },

@@ -56,7 +56,7 @@ function Lobby({ user }: { user: User }) {
     <div className="mx-auto max-w-xl">
       <h1 className="text-3xl font-black tracking-tight">Đấu 1-1</h1>
       <p className="mt-2 text-ink-soft">
-        Hai người giải cùng một đề 7×7. Mỗi con mèo đặt xuống đều được kiểm tra ngay với lời giải. Sai {PVP.maxMistakes} lần là thua, ai đặt đủ mèo trước thì thắng.
+        Hai người cùng xóa một bàn {PVP.board.rows}×{PVP.board.cols} giống hệt nhau, mỗi người một bàn riêng. Ai xóa sạch trước thì thắng; hết {PVP.maxDurationMs / 60000} phút thì ai nối được nhiều cặp hơn thắng.
       </p>
 
       <div className="mt-6 grid grid-cols-3 gap-2 text-center">

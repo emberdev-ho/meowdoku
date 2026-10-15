@@ -30,6 +30,12 @@
   --r9: #bcc4da;
   --cell-line: rgba(35, 38, 77, 0.14);
   --mark: rgba(35, 38, 77, 0.55);
+  /* Màu nền 4 kiểu ô của game nối mèo. */
+  --t0: #fff4e0;
+  --t1: #ffd9e4;
+  --t2: #d4e6ff;
+  --t3: #d5f2e0;
+  --board: #c9cfee;
   color-scheme: light;
 }
 
@@ -63,6 +69,11 @@
     --r9: #4f5873;
     --cell-line: rgba(0, 0, 0, 0.28);
     --mark: rgba(232, 234, 247, 0.7);
+    --t0: #f3e6cc;
+    --t1: #f2c3d2;
+    --t2: #bcd3f5;
+    --t3: #bfe3cd;
+    --board: #2a2f5c;
     color-scheme: dark;
   }
 }
@@ -84,6 +95,7 @@
   --color-bad: var(--bad);
   --color-bad-ink: var(--bad-ink);
   --color-good: var(--good);
+  --color-board: var(--board);
   --font-sans: ui-rounded, "SF Pro Rounded", "Nunito", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
 }
 
@@ -118,7 +130,12 @@ body {
 .anim-pop { animation: pop 180ms ease-out; }
 .anim-shake { animation: shake 240ms ease-in-out 2; }
 .anim-tick { animation: tick 600ms ease-out; }
+@keyframes hint {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+.anim-hint { animation: hint 700ms ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .anim-pop, .anim-shake, .anim-tick { animation: none; }
+  .anim-pop, .anim-shake, .anim-tick, .anim-hint { animation: none; }
 }

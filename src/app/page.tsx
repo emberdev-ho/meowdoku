@@ -1,15 +1,20 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
-import { CatIcon } from "@/components/CatIcon";
+import { Board } from "@/components/Board";
 import { useSession } from "@/components/SessionProvider";
 import { api, type User } from "@/lib/client";
 import { LEVEL_COUNT } from "@/lib/config";
-import { parseRegions } from "@/lib/puzzle";
+import type { Point } from "@/lib/onet";
 
-// Bàn 5×5 đã giải để trang trí: vùng màu theo từng ô và vị trí 5 con mèo.
-const SAMPLE_REGIONS = parseRegions("0001120111223312333422344");
-const SAMPLE_CATS = [1, 8, 10, 17, 24];
+// Bàn 4×6 để trang trí: hai chú mèo giống nhau (ô 1 và ô 16) nối bằng đường vòng qua viền trên.
+const SAMPLE_CELLS = [13, 7, 22, 30, 0, 4, 2, 27, 0, 16, 0, 33, 25, 9, 18, 0, 7, 11, 34, 0, 6, 21, 29, 15];
+const SAMPLE_PATH: Point[] = [
+  [0, 1],
+  [-1, 1],
+  [-1, 4],
+  [2, 4],
+];
 
 export default function Home() {
   const { user } = useSession();
@@ -20,7 +25,7 @@ export default function Home() {
       <section>
         <h1 className="text-[clamp(3rem,11vw,6.5rem)] leading-[0.9] font-black tracking-[-0.04em]">Meowdoku</h1>
         <p className="mt-4 max-w-[34ch] text-lg text-ink-soft">
-          Đặt mèo vào bàn chia vùng màu: mỗi hàng, mỗi cột và mỗi vùng có đúng một con mèo, và không con nào đứng sát con nào, kể cả chéo góc.
+          Nối hai chú mèo giống hệt nhau bằng đường đi rẽ tối đa hai lần. Xóa sạch bàn trước khi hết giờ để qua màn.
         </p>
 
         <div className="mt-7 flex flex-wrap gap-3">
@@ -41,32 +46,8 @@ export default function Home() {
         {user && <Profile user={user} />}
       </section>
 
-      <div className="mx-auto w-full max-w-sm rotate-2" aria-hidden>
-        <div className="grid grid-cols-5 overflow-hidden rounded-2xl border-[3px] border-grid-bold">
-          {SAMPLE_REGIONS.map((g, i) => {
-            const c = i % 5;
-            const r = Math.floor(i / 5);
-            const edgeRight = c < 4 && SAMPLE_REGIONS[i + 1] !== g;
-            const edgeBottom = r < 4 && SAMPLE_REGIONS[i + 5] !== g;
-            return (
-              <div
-                key={i}
-                className="relative aspect-square"
-                style={{
-                  background: `var(--r${g})`,
-                  borderRight: c < 4 ? (edgeRight ? "3px solid var(--grid-bold)" : "1px solid var(--cell-line)") : undefined,
-                  borderBottom: r < 4 ? (edgeBottom ? "3px solid var(--grid-bold)" : "1px solid var(--cell-line)") : undefined,
-                }}
-              >
-                {SAMPLE_CATS.includes(i) && (
-                  <span className="absolute inset-[10%] grid place-items-center rounded-full bg-card shadow-[0_2px_0_rgba(0,0,0,0.2)]">
-                    <CatIcon value={SAMPLE_CATS.indexOf(i) + 1} className="h-[88%] w-[88%]" label="" />
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      <div className="mx-auto w-full max-w-md rotate-1" aria-hidden>
+        <Board rows={4} cols={6} cells={SAMPLE_CELLS} selected={null} hint={[1, 16]} path={SAMPLE_PATH} disabled onPick={() => {}} />
       </div>
     </div>
   );

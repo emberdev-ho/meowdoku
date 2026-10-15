@@ -1,6 +1,6 @@
+import { isValidLevelId } from "@/lib/config";
 import { requireUser } from "@/lib/server/auth";
 import { ApiError, intParam, route } from "@/lib/server/http";
-import { getLevel } from "@/lib/server/levels";
 import { collections } from "@/lib/server/mongo";
 import { signPlayToken } from "@/lib/server/play-token";
 
@@ -8,7 +8,7 @@ import { signPlayToken } from "@/lib/server/play-token";
 export const POST = route(async (_req, ctx) => {
   const user = await requireUser();
   const id = intParam((await ctx.params).id);
-  await getLevel(id);
+  if (!isValidLevelId(id)) throw new ApiError(404, "Không có màn này.");
   if (id > user.maxLevel + 1) throw new ApiError(403, `Hãy qua màn ${user.maxLevel + 1} trước.`);
   const uid = user._id.toHexString();
   const { results } = await collections();

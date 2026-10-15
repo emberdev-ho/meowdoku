@@ -2,15 +2,17 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Board, type Cell, type MarkMode } from "@/components/Board";
+import { Board, useTransposed, visibleGravity } from "@/components/Board";
 import { RequireUser, useSession } from "@/components/SessionProvider";
 import { api, ClientError, formatTime, type User } from "@/lib/client";
-import { parseRegions } from "@/lib/puzzle";
-import type { RoomView } from "@/lib/server/rooms";
+import { COOP, PVP } from "@/lib/config";
+import { GRAVITY_LABEL, decodeState, findPath, remaining, type Point } from "@/lib/onet";
+import type { MoveReply, RoomView } from "@/lib/server/rooms";
 import { usePoll } from "@/lib/usePoll";
 import { useBoardKeys } from "@/lib/useBoardKeys";
 
 const PLAYER_COLORS = ["#E8457A", "#4A7BD0", "#E3A21A", "#23A06A"];
+const LINK_MS = 220;
 
 export default function RoomPage() {
   const { id } = useParams<{ id: string }>();
@@ -22,15 +24,18 @@ function Room({ id, user }: { id: string; user: User }) {
   const { refresh: refreshUser } = useSession();
   const [finished, setFinished] = useState(false);
   const { data: view, error, refresh } = usePoll<RoomView>(finished ? null : `/api/rooms/${id}`, 1000);
-  // Dấu X chỉ nằm ở máy người chơi; mèo đã đặt đúng lấy từ server.
-  const [marks, setMarks] = useState<Set<number>>(new Set());
-  const [placed, setPlaced] = useState<Set<number>>(new Set());
-  const [pending, setPending] = useState<Set<number>>(new Set());
+  // Bàn mới nhất server trả về sau nước đi của mình (trước khi lần hỏi trạng thái kế tiếp về tới).
+  const [local, setLocal] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<number | null>(null);
   const [flash, setFlash] = useState<number[] | null>(null);
+  const [path, setPath] = useState<Point[] | null>(null);
+  const [removing, setRemoving] = useState<number[] | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const offset = useRef(0);
+  const sending = useRef(false);
 
   useEffect(() => {
     if (!view) return;
@@ -47,82 +52,79 @@ function Room({ id, user }: { id: string; user: User }) {
   }, []);
 
   const serverNow = clock + offset.current;
-  const size = view?.size ?? 7;
-  const regions = useMemo(() => (view ? parseRegions(view.regions) : []), [view?.regions]);
-  const cats = useMemo(() => {
-    const s = new Set<number>([...(view?.given ?? []), ...(view?.cats ?? []), ...placed, ...pending]);
-    return s;
-  }, [view, placed, pending]);
-  const cells = useMemo<Cell[]>(
-    () => Array.from({ length: size * size }, (_, i) => (cats.has(i) ? 2 : marks.has(i) ? 1 : 0)),
-    [size, cats, marks],
-  );
-  const locked = useMemo(() => cells.map((v) => v === 2), [cells]);
+  const spec = view ? { rows: view.rows, cols: view.cols } : { rows: 8, cols: 12 };
+  const transposed = useTransposed(spec.rows, spec.cols);
 
-  const colorOf = useMemo(() => {
-    const map: Record<string, string> = {};
-    view?.players.forEach((p, i) => (map[p.id] = PLAYER_COLORS[i % PLAYER_COLORS.length]));
-    return map;
-  }, [view?.players]);
+  // Bàn chỉ mất dần ô (trộn không làm đổi số ô), nên bàn còn ít ô hơn là bàn mới hơn.
+  const state = useMemo(() => {
+    if (!view) return null;
+    const fromServer = decodeState(view.board);
+    if (!local) return fromServer;
+    const mine = decodeState(local);
+    return remaining(mine) < remaining(fromServer) ? mine : fromServer;
+  }, [view, local]);
+
+  // Ô đang chọn bị người khác nối mất (co-op) hoặc bị dồn đi thì bỏ chọn.
+  const selectedKind = useRef(0);
+  useEffect(() => {
+    if (selected !== null && state && state.cells[selected] !== selectedKind.current) setSelected(null);
+  }, [state, selected]);
 
   const counting = !!view && view.status === "playing" && serverNow < view.startAt;
   const canPlay = !!view && view.status === "playing" && !counting;
 
-  const toggleMark = (i: number, on: boolean) =>
-    setMarks((m) => {
-      const next = new Set(m);
-      if (on) next.add(i);
-      else next.delete(i);
-      return next;
-    });
-
-  /** Gửi con mèo lên server kiểm tra. Đặt sai thì ô quay về dấu X và bị tính một lần sai. */
-  const placeCat = async (idx: number) => {
-    if (!canPlay || cats.has(idx)) return;
+  const pick = async (i: number) => {
+    if (!view || !state || !canPlay || sending.current || !state.cells[i]) return;
+    setCursor(i);
+    if (selected === null || selected === i || state.cells[selected] !== state.cells[i]) {
+      const next = selected === i ? null : i;
+      selectedKind.current = next === null ? 0 : state.cells[i];
+      setSelected(next);
+      return;
+    }
+    const a = selected;
+    // Kiểm tra trước trên máy để vẽ đường nối ngay; server vẫn kiểm tra lại.
+    const preview = findPath(state.cells, spec.rows, spec.cols, a, i);
+    if (!preview) {
+      setFlash([a, i]);
+      setTimeout(() => setFlash(null), 500);
+      selectedKind.current = state.cells[i];
+      setSelected(i);
+      return;
+    }
+    setSelected(null);
+    setPath(preview);
+    setRemoving([a, i]);
+    sending.current = true;
     setMoveError(null);
-    setPending((p) => new Set(p).add(idx));
     try {
-      const res = await api<{ correct: boolean }>(`/api/rooms/${id}/move`, { method: "POST", body: { idx } });
-      if (res.correct) {
-        setPlaced((p) => new Set(p).add(idx));
-        toggleMark(idx, false);
-      } else {
-        toggleMark(idx, true);
-        setFlash([idx]);
-        setTimeout(() => setFlash(null), 650);
+      const res = await api<MoveReply>(`/api/rooms/${id}/move`, { method: "POST", body: { a, b: i } });
+      setLocal(res.board);
+      if (!res.ok) {
+        setFlash([a, i]);
+        setTimeout(() => setFlash(null), 500);
+      } else if (res.autoShuffled) {
+        setNotice("Hết nước đi, bàn đã được trộn lại.");
+        setTimeout(() => setNotice(null), 2200);
       }
     } catch (e) {
       if (!(e instanceof ClientError && e.status === 409)) setMoveError((e as Error).message);
     } finally {
-      setPending((p) => {
-        const next = new Set(p);
-        next.delete(idx);
-        return next;
-      });
+      setTimeout(() => {
+        setPath(null);
+        setRemoving(null);
+        sending.current = false;
+      }, LINK_MS);
+      refresh();
     }
-    refresh();
-  };
-
-  const tap = (i: number) => {
-    setSelected(i);
-    if (!canPlay || cats.has(i)) return;
-    if (marks.has(i)) placeCat(i);
-    else toggleMark(i, true);
-  };
-
-  const mark = (i: number, mode: MarkMode) => {
-    if (!canPlay || cats.has(i)) return;
-    toggleMark(i, mode === "mark");
   };
 
   useBoardKeys({
-    size,
-    selected,
-    setSelected,
-    onTap: () => selected !== null && tap(selected),
-    onPlace: () => selected !== null && placeCat(selected),
-    onToggleMark: () => selected !== null && !cats.has(selected) && toggleMark(selected, !marks.has(selected)),
-    onClear: () => selected !== null && toggleMark(selected, false),
+    rows: spec.rows,
+    cols: spec.cols,
+    cursor,
+    setCursor,
+    onPick: () => cursor !== null && pick(cursor),
     enabled: canPlay,
   });
 
@@ -132,7 +134,13 @@ function Room({ id, user }: { id: string; user: User }) {
     router.push(view?.mode === "pvp" ? "/pvp" : "/coop");
   };
 
-  if (!view)
+  const colorOf = useMemo(() => {
+    const map: Record<string, string> = {};
+    view?.players.forEach((p, i) => (map[p.id] = PLAYER_COLORS[i % PLAYER_COLORS.length]));
+    return map;
+  }, [view?.players]);
+
+  if (!view || !state)
     return (
       <div className="py-16 text-center">
         {error ? (
@@ -150,24 +158,23 @@ function Room({ id, user }: { id: string; user: User }) {
 
   if (view.status === "waiting") return <WaitingRoom view={view} id={id} onLeave={leave} onStarted={refresh} colorOf={colorOf} />;
 
-  const me = view.players.find((p) => p.isMe)!;
-  const elapsed = view.startAt ? (view.endAt || serverNow) - view.startAt : 0;
+  const maxMs = view.mode === "pvp" ? PVP.maxDurationMs : COOP.maxDurationMs;
+  const left = view.startAt ? Math.max(0, view.startAt + maxMs - (view.endAt || serverNow)) : maxMs;
 
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="flex w-full max-w-[min(92vw,520px)] items-start justify-between gap-3">
+    <div className="flex flex-col items-center gap-3">
+      <div className="flex w-full max-w-4xl items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-black tracking-tight">{view.mode === "pvp" ? "Đấu 1-1" : "Chơi cùng bạn"}</h1>
           <p className="text-sm font-semibold text-ink-soft">
-            {view.mode === "pvp"
-              ? `Sai ${me.mistakes}/${view.maxMistakes}`
-              : `Cả nhóm sai ${view.teamMistakes}/${view.maxMistakes}, đã đặt ${view.teamFilled}/${view.target} mèo`}
+            {view.rows}×{view.cols} · {GRAVITY_LABEL[visibleGravity(view.gravity, transposed)]}
+            {view.mode === "coop" && ` · cả nhóm đã nối ${view.teamFilled}/${view.target} cặp`}
           </p>
         </div>
-        <p className="text-2xl font-black tabular-nums">{formatTime(Math.max(0, elapsed))}</p>
+        <p className="text-2xl font-black tabular-nums">{formatTime(Math.ceil(left / 1000) * 1000)}</p>
       </div>
 
-      <ul className="grid w-full max-w-[min(92vw,520px)] gap-1.5">
+      <ul className="grid w-full max-w-4xl gap-1.5 sm:grid-cols-2">
         {view.players.map((p) => (
           <li key={p.id} className="flex items-center gap-2 rounded-xl bg-card px-3 py-2">
             <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: colorOf[p.id] }} aria-hidden />
@@ -184,12 +191,12 @@ function Room({ id, user }: { id: string; user: User }) {
                     style={{ width: `${(p.progress / view.target) * 100}%`, background: colorOf[p.id] }}
                   />
                 </span>
-                <span className="w-10 text-right text-xs font-bold tabular-nums">
+                <span className="w-12 text-right text-xs font-bold tabular-nums">
                   {p.progress}/{view.target}
                 </span>
               </span>
             ) : (
-              <span className="text-xs font-bold text-ink-soft tabular-nums">{p.progress} mèo</span>
+              <span className="text-xs font-bold text-ink-soft tabular-nums">{p.progress} cặp</span>
             )}
           </li>
         ))}
@@ -197,35 +204,39 @@ function Room({ id, user }: { id: string; user: User }) {
 
       {view.status === "finished" && view.result && <ResultPanel view={view} meId={user.id} />}
 
-      <div className="relative w-full max-w-[min(92vw,520px)]">
+      <div className="relative w-full max-w-4xl">
         <Board
-          size={size}
-          regions={regions}
-          cells={cells}
-          locked={locked}
-          given={view.given}
-          pending={pending}
+          rows={view.rows}
+          cols={view.cols}
+          cells={state.cells}
           selected={selected}
+          cursor={cursor}
           flash={flash}
-          catKind={view.mode === "pvp" ? 2 : 5}
-          ownerColor={view.mode === "coop" ? (i) => colorOf[view.owners[i]] : undefined}
+          path={path}
+          removing={removing}
           disabled={!canPlay}
-          onTap={tap}
-          onMark={mark}
+          onPick={pick}
         />
         {counting && (
-          <div className="absolute inset-0 grid place-items-center rounded-xl bg-card/85" aria-live="assertive">
+          <div className="absolute inset-0 z-30 grid place-items-center rounded-2xl bg-card/85" aria-live="assertive">
             <span key={Math.ceil((view.startAt - serverNow) / 1000)} className="anim-tick text-8xl font-black">
               {Math.max(1, Math.ceil((view.startAt - serverNow) / 1000))}
             </span>
           </div>
         )}
+        {notice && (
+          <p className="pointer-events-none absolute inset-x-0 top-3 z-30 mx-auto w-fit rounded-full bg-ink px-4 py-1.5 text-sm font-bold text-paper" role="status">
+            {notice}
+          </p>
+        )}
       </div>
 
       {view.status === "playing" && (
         <>
-          <p className="max-w-[min(92vw,520px)] text-center text-sm text-ink-soft">
-            Bấm một ô để đánh X, bấm lần nữa để đặt mèo. Mỗi con mèo được kiểm tra ngay với lời giải.
+          <p className="max-w-md text-center text-sm text-ink-soft">
+            {view.mode === "pvp"
+              ? "Hai người cùng một đề. Ai xóa sạch bàn trước thì thắng; hết giờ thì ai nối được nhiều cặp hơn thắng."
+              : "Cả nhóm cùng xóa một bàn. Mèo ai nối thì người đó được tính cặp."}
           </p>
           {moveError && <p className="text-sm font-semibold text-bad-ink">{moveError}</p>}
           <button onClick={leave} className="text-sm font-semibold text-ink-soft underline underline-offset-4">
@@ -313,11 +324,10 @@ function WaitingRoom({
 
 const PVP_REASON: Record<string, [string, string]> = {
   // [khi bạn thắng, khi bạn thua]
-  solved: ["Bạn đặt đủ mèo trước.", "Đối thủ đặt đủ mèo trước."],
-  mistakes: ["Đối thủ sai quá số lần cho phép.", "Bạn sai quá số lần cho phép."],
+  solved: ["Bạn xóa sạch bàn trước.", "Đối thủ xóa sạch bàn trước."],
   forfeit: ["Đối thủ mất kết nối quá lâu.", "Bạn mất kết nối quá lâu."],
   left: ["Đối thủ đã rời trận.", "Bạn đã rời trận."],
-  timeout: ["Hết giờ, bạn đặt được nhiều mèo hơn.", "Hết giờ, đối thủ đặt được nhiều mèo hơn."],
+  timeout: ["Hết giờ, bạn nối được nhiều cặp hơn.", "Hết giờ, đối thủ nối được nhiều cặp hơn."],
 };
 
 function ResultPanel({ view, meId }: { view: RoomView; meId: string }) {
@@ -329,16 +339,16 @@ function ResultPanel({ view, meId }: { view: RoomView; meId: string }) {
   if (r.mode === "pvp") {
     const won = r.winner === meId;
     title = r.winner === null ? "Hòa" : won ? "Bạn thắng!" : "Bạn thua";
-    detail = r.winner === null ? "Hết giờ, hai bên đặt được số mèo bằng nhau." : (PVP_REASON[r.reason]?.[won ? 0 : 1] ?? "");
+    detail = r.winner === null ? "Hết giờ, hai bên nối được số cặp bằng nhau." : (PVP_REASON[r.reason]?.[won ? 0 : 1] ?? "");
     const d = r.changes[meId] ?? 0;
     extra = `${d >= 0 ? "+" : ""}${d} điểm đấu`;
   } else {
-    title = r.success ? "Cả nhóm giải xong!" : "Chưa giải được";
-    detail = r.success ? "Mọi vùng đã có mèo." : r.reason === "mistakes" ? "Cả nhóm sai quá số lần cho phép." : "Đã hết giờ.";
+    title = r.success ? "Cả nhóm xóa sạch bàn!" : "Chưa xóa xong";
+    detail = r.success ? "Không còn chú mèo nào trên bàn." : "Đã hết giờ.";
   }
 
   return (
-    <div className="w-full max-w-[min(92vw,520px)] rounded-3xl bg-card p-5 text-center" role="status">
+    <div className="w-full max-w-md rounded-3xl bg-card p-5 text-center" role="status">
       <p className="text-3xl font-black tracking-tight">{title}</p>
       <p className="mt-1 text-ink-soft">{detail}</p>
       {extra && <p className="mt-2 text-xl font-black tabular-nums">{extra}</p>}

@@ -1,12 +1,13 @@
 // Phòng PvP và co-op lưu trên Redis (trạng thái tạm thời, tự hết hạn sau 2 giờ).
 // Kết quả trận được ghi sang MongoDB khi kết thúc.
 //
-// Client hỏi trạng thái phòng mỗi ~1 giây (polling). Mỗi lần đặt mèo đều được server
-// so với lời giải; client không bao giờ nhận lời giải. Dấu X chỉ nằm ở client.
+// Client hỏi trạng thái phòng mỗi ~1 giây (polling). Bàn sinh từ seed của phòng;
+// mỗi nước nối được server kiểm tra lại trên bàn lưu ở Redis rồi mới ghi nhận.
+// PvP: mỗi người một bàn riêng, ai xóa sạch trước thì thắng. Co-op: cả nhóm chung một bàn.
 import { ObjectId } from "mongodb";
 import { COOP, PVP, ROOM_TTL_SECONDS } from "../config";
+import { GRAVITY_ORDER, decodeState, encodeState, initialState, isCleared, playMove, type Gravity, type Point, type Spec } from "../onet";
 import { ApiError } from "./http";
-import { getRoomPuzzle, randomRoomPuzzle } from "./levels";
 import { collections, type UserDoc } from "./mongo";
 import { hash, redis } from "./redis";
 import { setPvpRating } from "./leaderboard";
@@ -21,19 +22,15 @@ export type RoomResult =
 type Meta = {
   id: string;
   mode: Mode;
-  puzzleId: string;
-  size: number;
-  regions: string;
-  given: number[];
-  target: number; // số mèo cần đặt thêm (không tính mèo cho sẵn)
+  spec: Spec;
+  target: number; // số cặp cần nối để xóa sạch bàn
   status: Status;
   host: string;
   code: string;
   createdAt: number;
   startAt: number;
   endAt: number;
-  filled: number;
-  mistakes: number;
+  filled: number; // co-op: số cặp cả nhóm đã nối
   result: RoomResult | null;
 };
 
@@ -45,14 +42,22 @@ export const roomKeys = (id: string) => ({
   meta: `room:${id}`,
   players: `room:${id}:players`,
   hb: `room:${id}:hb`, // userId -> lần cuối hỏi trạng thái (ms)
-  prog: `room:${id}:prog`, // userId -> số mèo đã đặt đúng
-  miss: `room:${id}:miss`, // userId -> số lần sai (PvP)
-  cells: `room:${id}:cells`, // co-op: idx -> userId đặt con mèo đó
-  board: (uid: string) => `room:${id}:b:${uid}`, // PvP: idx -> "1" (mèo của riêng người này)
+  prog: `room:${id}:prog`, // userId -> số cặp đã nối
+  board: (uid: string) => `room:${id}:b:${uid}`, // PvP: bàn của từng người (encodeState)
+  shared: `room:${id}:board`, // co-op: bàn chung
   lock: `room:${id}:lock`,
 });
 type Keys = ReturnType<typeof roomKeys>;
 type Room = { k: Keys; meta: Meta; players: Record<string, PlayerInfo>; hb: Record<string, number> };
+
+// Ghi bàn mới chỉ khi bàn trên Redis vẫn là bàn đã đọc (tránh hai nước ghi đè nhau).
+// KEYS: khóa bàn. ARGV: giá trị cũ ("" nếu chưa có), giá trị mới, TTL giây.
+const CAS_SCRIPT = `
+local cur = redis.call('GET', KEYS[1]) or ''
+if cur ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3]))
+return 1
+`;
 
 const strings = (o: Record<string, string | number>) =>
   Object.fromEntries(Object.entries(o).map(([key, v]) => [key, String(v)]));
@@ -82,7 +87,10 @@ export async function createRoom(input: {
   players: { uid: string; name: string; rating: number }[];
   startNow: boolean;
 }): Promise<string> {
-  const puzzle = await randomRoomPuzzle(input.mode);
+  const board = input.mode === "pvp" ? PVP.board : COOP.board;
+  // PvP đổi kiểu dồn ngẫu nhiên cho đa dạng; co-op để bàn đứng yên vì nhiều người cùng bấm.
+  const gravity: Gravity = input.mode === "pvp" ? GRAVITY_ORDER[Math.floor(Math.random() * GRAVITY_ORDER.length)] : "none";
+  const seed = crypto.getRandomValues(new Uint32Array(1))[0];
   const id = input.id ?? newRoomId();
   const k = roomKeys(id);
   const now = Date.now();
@@ -96,11 +104,12 @@ export async function createRoom(input: {
     strings({
       id,
       mode: input.mode,
-      puzzleId: puzzle.id,
-      size: puzzle.size,
-      regions: puzzle.regions,
-      given: JSON.stringify(puzzle.given),
-      target: puzzle.size - puzzle.given.length,
+      rows: board.rows,
+      cols: board.cols,
+      kinds: board.kinds,
+      gravity,
+      seed,
+      target: (board.rows * board.cols) / 2,
       status: input.startNow ? "playing" : "waiting",
       host: input.host,
       code,
@@ -108,7 +117,6 @@ export async function createRoom(input: {
       startAt,
       endAt: 0,
       filled: 0,
-      mistakes: 0,
     }),
   );
   p.hset(k.players, Object.fromEntries(input.players.map((pl) => [pl.uid, JSON.stringify({ name: pl.name, rating: pl.rating })])));
@@ -130,10 +138,7 @@ async function loadRoom(id: string): Promise<Room> {
   const meta: Meta = {
     id: m.id,
     mode: m.mode as Mode,
-    puzzleId: m.puzzleId,
-    size: Number(m.size),
-    regions: m.regions,
-    given: JSON.parse(m.given ?? "[]"),
+    spec: { rows: Number(m.rows), cols: Number(m.cols), kinds: Number(m.kinds), gravity: m.gravity as Gravity, seed: Number(m.seed) },
     target: Number(m.target),
     status: m.status as Status,
     host: m.host,
@@ -142,7 +147,6 @@ async function loadRoom(id: string): Promise<Room> {
     startAt: Number(m.startAt),
     endAt: Number(m.endAt),
     filled: Number(m.filled ?? 0),
-    mistakes: Number(m.mistakes ?? 0),
     result: m.result ? (JSON.parse(m.result) as RoomResult) : null,
   };
   const players: Record<string, PlayerInfo> = {};
@@ -154,6 +158,8 @@ async function loadRoom(id: string): Promise<Room> {
 
 const toNums = (o: Record<string, string> | null) =>
   Object.fromEntries(Object.entries(o ?? {}).map(([key, v]) => [key, Number(v)])) as Record<string, number>;
+
+const boardKey = (room: Room, uid: string) => (room.meta.mode === "pvp" ? room.k.board(uid) : room.k.shared);
 
 // ---------------------------------------------------------------------------
 // Trạng thái phòng cho từng người xem
@@ -170,39 +176,27 @@ export async function getRoomView(id: string, uid: string) {
     room = await loadRoom(id);
   }
 
-  const { k, meta } = room;
+  const { meta } = room;
   const p = redis().pipeline();
-  p.hgetall(k.prog);
-  p.hgetall(k.miss);
-  p.hgetall(meta.mode === "pvp" ? k.board(uid) : k.cells);
-  const [prog, miss, filled] = ((await p.exec()) as unknown[]).map(hash);
-  const progress = toNums(prog);
-  const mistakes = toNums(miss);
-
-  // PvP: chỉ thấy mèo của mình. Co-op: thấy mèo của cả nhóm kèm người đặt.
-  const cats: number[] = [];
-  const owners: Record<number, string> = {};
-  for (const [idx, by] of Object.entries(filled ?? {})) {
-    cats.push(Number(idx));
-    if (meta.mode === "coop") owners[Number(idx)] = by;
-  }
+  p.hgetall(room.k.prog);
+  p.get(boardKey(room, uid));
+  const [progRaw, boardRaw] = (await p.exec()) as [unknown, string | null];
+  const progress = toNums(hash(progRaw));
 
   return {
     id: meta.id,
     mode: meta.mode,
     status: meta.status,
-    size: meta.size,
-    regions: meta.regions,
-    given: meta.given,
-    cats: cats.sort((a, b) => a - b),
-    owners,
+    rows: meta.spec.rows,
+    cols: meta.spec.cols,
+    gravity: meta.spec.gravity,
+    // PvP: bàn của riêng người xem. Co-op: bàn chung của cả nhóm.
+    board: boardRaw ?? encodeState(initialState(meta.spec)),
     target: meta.target,
     code: meta.mode === "coop" ? meta.code : undefined,
     startAt: meta.startAt,
     endAt: meta.endAt,
     now,
-    maxMistakes: meta.mode === "pvp" ? PVP.maxMistakes : COOP.maxMistakes,
-    teamMistakes: meta.mistakes,
     teamFilled: meta.filled,
     result: meta.result,
     players: Object.entries(room.players).map(([pid, info]) => ({
@@ -210,7 +204,6 @@ export async function getRoomView(id: string, uid: string) {
       name: info.name,
       rating: info.rating,
       progress: progress[pid] ?? 0,
-      mistakes: mistakes[pid] ?? 0,
       online: now - (room.hb[pid] ?? 0) < 8000,
       isMe: pid === uid,
       isHost: pid === meta.host,
@@ -248,58 +241,40 @@ async function maybeResolve(room: Room, uid: string, now: number): Promise<boole
 // ---------------------------------------------------------------------------
 // Nước đi
 
-export async function makeMove(id: string, uid: string, idx: number) {
+export type MoveReply = { ok: false; board: string } | { ok: true; board: string; path: Point[]; autoShuffled: boolean };
+
+export async function makeMove(id: string, uid: string, a: number, b: number): Promise<MoveReply> {
   const room = await loadRoom(id);
   const { k, meta } = room;
   if (!room.players[uid]) throw new ApiError(403, "Bạn không ở trong phòng này.");
   if (meta.status !== "playing") throw new ApiError(409, "Trận chưa bắt đầu hoặc đã kết thúc.");
   if (Date.now() < meta.startAt) throw new ApiError(409, "Chờ hết đếm ngược đã.");
-  if (!Number.isInteger(idx) || idx < 0 || idx >= meta.size * meta.size) throw new ApiError(400, "Ô không hợp lệ.");
-  if (meta.given.includes(idx)) throw new ApiError(400, "Ô này đã có mèo cho sẵn.");
+  const n = meta.spec.rows * meta.spec.cols;
+  if (![a, b].every((x) => Number.isInteger(x) && x >= 0 && x < n)) throw new ApiError(400, "Ô không hợp lệ.");
 
-  const puzzle = await getRoomPuzzle(meta.puzzleId);
-  const correct = puzzle.solution.includes(idx);
   const r = redis();
+  const key = boardKey(room, uid);
+  // Thử lại vài lần nếu người khác (co-op) vừa đổi bàn giữa lúc đọc và ghi.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const raw = await r.get<string>(key);
+    const state = raw ? decodeState(raw) : initialState(meta.spec);
+    const res = playMove(meta.spec, state, a, b);
+    if (!res.ok) return { ok: false, board: raw ?? encodeState(state) };
+    const next = encodeState(res.state);
+    const saved = await r.eval(CAS_SCRIPT, [key], [raw ?? "", next, String(ROOM_TTL_SECONDS)]);
+    if (Number(saved) !== 1) continue;
 
-  if (meta.mode === "pvp") {
-    if (correct) {
-      const added = await r.hsetnx(k.board(uid), String(idx), "1");
-      if (added === 0) return { correct: true };
-      const p = r.pipeline();
-      p.hincrby(k.prog, uid, 1);
-      p.expire(k.board(uid), ROOM_TTL_SECONDS);
-      p.expire(k.prog, ROOM_TTL_SECONDS);
-      const [progress] = (await p.exec()) as [number];
-      if (progress >= meta.target) await finish(room, { winner: uid, reason: "solved" });
-      return { correct: true };
-    }
-    const p = r.pipeline();
-    p.hincrby(k.miss, uid, 1);
-    p.expire(k.miss, ROOM_TTL_SECONDS);
-    const [mistakes] = (await p.exec()) as [number];
-    if (mistakes >= PVP.maxMistakes) {
-      const opponent = Object.keys(room.players).find((p2) => p2 !== uid) ?? null;
-      await finish(room, { winner: opponent, reason: "mistakes" });
-    }
-    return { correct: false, mistakes };
-  }
-
-  // Co-op: con mèo đúng nào đặt trước thì được ghi nhận cho người đó.
-  if (correct) {
-    const added = await r.hsetnx(k.cells, String(idx), uid);
-    if (added === 0) return { correct: true };
     const p = r.pipeline();
     p.hincrby(k.prog, uid, 1);
-    p.hincrby(k.meta, "filled", 1);
-    p.expire(k.cells, ROOM_TTL_SECONDS);
     p.expire(k.prog, ROOM_TTL_SECONDS);
-    const [, filled] = (await p.exec()) as [number, number];
-    if (filled >= meta.target) await finish(room, { success: true, reason: "solved" });
-    return { correct: true };
+    if (meta.mode === "coop") p.hincrby(k.meta, "filled", 1);
+    await p.exec();
+    if (isCleared(res.state)) {
+      await finish(room, meta.mode === "pvp" ? { winner: uid, reason: "solved" } : { success: true, reason: "solved" });
+    }
+    return { ok: true, board: next, path: res.path, autoShuffled: res.autoShuffled };
   }
-  const mistakes = await r.hincrby(k.meta, "mistakes", 1);
-  if (mistakes >= COOP.maxMistakes) await finish(room, { success: false, reason: "mistakes" });
-  return { correct: false, mistakes };
+  throw new ApiError(409, "Bàn vừa thay đổi, thử lại.");
 }
 
 // ---------------------------------------------------------------------------
@@ -319,12 +294,7 @@ async function finish(room: Room, outcome: { winner?: string | null; success?: b
 
   const now = Date.now();
   const uids = Object.keys(room.players);
-  const p = r.pipeline();
-  p.hgetall(k.prog);
-  p.hgetall(k.miss);
-  const [progRaw, missRaw] = ((await p.exec()) as unknown[]).map(hash);
-  const prog = toNums(progRaw);
-  const miss = toNums(missRaw);
+  const prog = toNums(hash(await r.hgetall(k.prog)));
   const { users, matches } = await collections();
   const oids = uids.map((u) => new ObjectId(u));
 
@@ -378,7 +348,7 @@ async function finish(room: Room, outcome: { winner?: string | null; success?: b
     await matches.insertOne({
       roomId: meta.id,
       mode: meta.mode,
-      puzzleId: meta.puzzleId,
+      puzzleId: `seed:${meta.spec.seed}:${meta.spec.gravity}`,
       outcome: outcome.reason,
       startedAt: new Date(meta.startAt),
       endedAt: new Date(now),
@@ -388,7 +358,6 @@ async function finish(room: Room, outcome: { winner?: string | null; success?: b
           userId: new ObjectId(u),
           name: room.players[u].name,
           progress: prog[u] ?? 0,
-          mistakes: miss[u],
           result: ru?.res,
           ratingBefore: ru?.before,
           ratingAfter: ru?.after,

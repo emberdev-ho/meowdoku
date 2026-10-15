@@ -2,39 +2,31 @@
 import { useEffect, useRef } from "react";
 
 type Handlers = {
-  size: number;
-  selected: number | null;
-  setSelected: (i: number) => void;
-  /** Giống bấm vào ô: trống → X → mèo → trống. */
-  onTap: () => void;
-  onToggleMark?: () => void;
-  onPlace?: () => void;
-  onClear?: () => void;
-  onUndo?: () => void;
+  rows: number;
+  cols: number;
+  cursor: number | null;
+  setCursor: (i: number) => void;
+  /** Chọn ô đang trỏ (như bấm chuột). */
+  onPick: () => void;
+  onHint?: () => void;
+  onShuffle?: () => void;
   enabled?: boolean;
 };
 
-/**
- * Điều khiển bằng bàn phím: mũi tên di chuyển, Space như bấm vào ô, Enter đặt/gỡ mèo,
- * X đánh dấu, Backspace xóa ô, Ctrl+Z hoàn tác.
- */
+/** Điều khiển bằng bàn phím: mũi tên di chuyển, Space hoặc Enter chọn ô, H gợi ý, S trộn bàn. */
 export function useBoardKeys(h: Handlers) {
   const ref = useRef(h);
   ref.current = h;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { size, selected, setSelected, onTap, onToggleMark, onPlace, onClear, onUndo, enabled = true } = ref.current;
-      if (!enabled) return;
+      const { rows, cols, cursor, setCursor, onPick, onHint, onShuffle, enabled = true } = ref.current;
+      if (!enabled || e.ctrlKey || e.metaKey || e.altKey) return;
       const target = e.target as HTMLElement;
-      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
-
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        onUndo?.();
-        return;
-      }
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (["INPUT", "TEXTAREA", "SELECT", "A"].includes(target.tagName) || target.isContentEditable) return;
+      // Đang trỏ vào một nút khác ngoài bàn thì để nút đó tự xử lý Space/Enter.
+      const onBoardButton = target.tagName === "BUTTON" && target.getAttribute("role") === "gridcell";
+      if (target.tagName === "BUTTON" && !onBoardButton && (e.key === " " || e.key === "Enter")) return;
 
       const moves: Record<string, [number, number]> = {
         ArrowUp: [-1, 0],
@@ -45,25 +37,17 @@ export function useBoardKeys(h: Handlers) {
       const mv = moves[e.key];
       if (mv) {
         e.preventDefault();
-        const cur = selected ?? 0;
-        const r = (Math.floor(cur / size) + mv[0] + size) % size;
-        const c = ((cur % size) + mv[1] + size) % size;
-        setSelected(r * size + c);
-        return;
-      }
-      // Các phím còn lại chỉ có tác dụng khi bàn đã có ô được chọn và không đang bấm nút khác.
-      if (selected === null || target.tagName === "BUTTON" || target.tagName === "A" || target.tagName === "SELECT") return;
-      if (e.key === " ") {
+        const cur = cursor ?? 0;
+        const r = (Math.floor(cur / cols) + mv[0] + rows) % rows;
+        const c = ((cur % cols) + mv[1] + cols) % cols;
+        setCursor(r * cols + c);
+      } else if ((e.key === " " || e.key === "Enter") && cursor !== null) {
         e.preventDefault();
-        onTap();
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        onPlace?.();
-      } else if (e.key.toLowerCase() === "x") {
-        onToggleMark?.();
-      } else if (e.key === "Backspace" || e.key === "Delete") {
-        e.preventDefault();
-        onClear?.();
+        onPick();
+      } else if (e.key.toLowerCase() === "h") {
+        onHint?.();
+      } else if (e.key.toLowerCase() === "s") {
+        onShuffle?.();
       }
     };
     window.addEventListener("keydown", onKey);

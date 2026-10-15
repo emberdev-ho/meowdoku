@@ -31,7 +31,7 @@ function CoopLobby() {
     <div className="mx-auto max-w-xl">
       <h1 className="text-3xl font-black tracking-tight">Chơi cùng bạn</h1>
       <p className="mt-2 text-ink-soft">
-        Tối đa {COOP.maxPlayers} người giải chung một bàn 8×8. Con mèo nào đặt đúng sẽ khóa lại. Cả nhóm sai đến lần thứ {COOP.maxMistakes} là thua.
+        Tối đa {COOP.maxPlayers} người cùng xóa chung một bàn {COOP.board.rows}×{COOP.board.cols}. Cả nhóm có {COOP.maxDurationMs / 60000} phút để xóa sạch bàn.
       </p>
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2">

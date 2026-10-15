@@ -2,20 +2,30 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Board, type Cell, type MarkMode } from "@/components/Board";
-import { CatIcon } from "@/components/CatIcon";
+import { Board, useTransposed, visibleGravity } from "@/components/Board";
 import { LeaderboardList } from "@/components/LeaderboardList";
 import { RequireUser, useSession } from "@/components/SessionProvider";
 import { Stars } from "@/components/Stars";
-import { api, formatTime, type LeaderEntry, type PublicLevel, type User } from "@/lib/client";
-import { SOLO, chunkFile, chunkOf, isValidLevelId } from "@/lib/config";
-import { conflictsWith, findConflicts, parseRegions } from "@/lib/puzzle";
+import { api, formatTime, type LeaderEntry, type User } from "@/lib/client";
+import { SOLO, isValidLevelId, levelSpec, timeLimitMs } from "@/lib/config";
+import {
+  GRAVITY_LABEL,
+  SHUFFLE_MOVE,
+  findMove,
+  initialState,
+  isCleared,
+  playMove,
+  remaining,
+  shuffleBoard,
+  type GameState,
+  type Move,
+  type Point,
+} from "@/lib/onet";
 import { useBoardKeys } from "@/lib/useBoardKeys";
 
 type SubmitResult = {
   timeMs: number;
   stars: number;
-  hints: number;
   firstClear: boolean;
   newBest: boolean;
   bestTime: number;
@@ -24,23 +34,8 @@ type SubmitResult = {
   nextLevel: number | null;
 };
 
-type HintResult = { kind: "place" | "remove"; idx: number; hints: number; token: string };
-
-const chunkCache = new Map<number, Promise<PublicLevel[]>>();
-function loadLevel(id: number): Promise<PublicLevel | undefined> {
-  const c = chunkOf(id);
-  let p = chunkCache.get(c);
-  if (!p) {
-    p = fetch(`/levels/${chunkFile(c)}`).then((r) => {
-      if (!r.ok) throw new Error("Không tải được dữ liệu màn.");
-      return r.json().then((d) => d.levels as PublicLevel[]);
-    });
-    chunkCache.set(c, p);
-  }
-  return p.then((levels) => levels.find((l) => l.id === id));
-}
-
-const catsOf = (cells: Cell[]) => cells.flatMap((v, i) => (v === 2 ? [i] : []));
+/** Thời gian hiện đường nối trước khi hai ô biến mất. */
+const LINK_MS = 220;
 
 export default function LevelPage() {
   const { id } = useParams<{ id: string }>();
@@ -52,189 +47,159 @@ export default function LevelPage() {
 function Game({ levelId, user }: { levelId: number; user: User }) {
   const router = useRouter();
   const { refresh } = useSession();
-  const [level, setLevel] = useState<PublicLevel | null>(null);
+  const spec = useMemo(() => levelSpec(levelId), [levelId]);
+  const limitMs = timeLimitMs(levelId);
+  const transposed = useTransposed(spec.rows, spec.cols);
+  const [state, setState] = useState<GameState | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [cells, setCells] = useState<Cell[]>([]);
-  const [locked, setLocked] = useState<boolean[]>([]);
-  const [history, setHistory] = useState<Cell[][]>([]);
   const [selected, setSelected] = useState<number | null>(null);
-  const [hearts, setHearts] = useState<number>(SOLO.hearts);
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [hint, setHint] = useState<Move | null>(null);
   const [flash, setFlash] = useState<number[] | null>(null);
-  const [hints, setHints] = useState(0);
+  const [path, setPath] = useState<Point[] | null>(null);
+  const [removing, setRemoving] = useState<number[] | null>(null);
+  const [hintsLeft, setHintsLeft] = useState<number>(SOLO.hints);
+  const [shufflesLeft, setShufflesLeft] = useState<number>(SOLO.shuffles);
+  const [notice, setNotice] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState(0);
-  const [failedAt, setFailedAt] = useState<number | null>(null);
+  const [timeUp, setTimeUp] = useState(false);
   const [best, setBest] = useState<{ time: number; stars: number } | null>(null);
   const [result, setResult] = useState<SubmitResult | null>(null);
   const [busy, setBusy] = useState(false);
+  const moves = useRef<Move[]>([]);
+  const animating = useRef(false);
   const submitted = useRef(false);
-  const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const later = (fn: () => void, ms: number) => timers.current.push(setTimeout(fn, ms));
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
   const start = useCallback(async () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
     setError(null);
     setResult(null);
     submitted.current = false;
+    animating.current = false;
     try {
-      const lvl = await loadLevel(levelId);
-      if (!lvl) throw new Error("Không có màn này.");
       const s = await api<{ token: string; best: { time: number; stars: number } | null }>(`/api/levels/${levelId}/start`, {
         method: "POST",
       });
-      const n = lvl.size * lvl.size;
-      const initial = Array.from({ length: n }, (_, i): Cell => (lvl.given.includes(i) ? 2 : 0));
-      setLevel(lvl);
+      moves.current = [];
       setToken(s.token);
       setBest(s.best);
-      setCells(initial);
-      setLocked(initial.map((v) => v === 2));
-      setHistory([]);
-      setHearts(SOLO.hearts);
-      setFailedAt(null);
-      setFlash(null);
-      setHints(0);
+      setState(initialState(spec));
       setSelected(null);
+      setHint(null);
+      setFlash(null);
+      setPath(null);
+      setRemoving(null);
+      setNotice(null);
+      setHintsLeft(SOLO.hints);
+      setShufflesLeft(SOLO.shuffles);
+      setTimeUp(false);
       setStartedAt(Date.now());
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [levelId]);
+  }, [levelId, spec]);
 
   useEffect(() => {
     start();
   }, [start]);
 
-  const size = level?.size ?? 5;
-  const regions = useMemo(() => (level ? parseRegions(level.regions) : []), [level]);
-  const cats = useMemo(() => catsOf(cells), [cells]);
-  const conflicts = useMemo(() => findConflicts(size, regions, cats), [size, regions, cats]);
-  const failed = hearts <= 0;
-  const playing = !!level && !result && !failed;
-  const editable = (i: number | null): i is number => i !== null && playing && !locked[i];
+  const playing = !!state && !!token && !result && !timeUp && !isCleared(state);
 
-  const pushHistory = () => setHistory((h) => [...h.slice(-199), cells]);
-  const setCell = (i: number, v: Cell) => setCells((cs) => cs.map((x, k) => (k === i ? v : x)));
-
-  const showFlash = (list: number[]) => {
-    clearTimeout(flashTimer.current);
-    setFlash(list);
-    flashTimer.current = setTimeout(() => setFlash(null), 650);
+  const showNotice = (text: string) => {
+    setNotice(text);
+    later(() => setNotice(null), 2200);
   };
 
-  /** Đặt mèo vào ô i. Vi phạm luật thì mất một tim và mèo không được đặt. */
-  const placeCat = (i: number, fallback: Cell) => {
-    const clash = conflictsWith(size, regions, cats, i);
-    if (clash.length) {
-      showFlash([i, ...clash]);
-      setHearts(hearts - 1);
-      if (hearts - 1 <= 0) setFailedAt(Date.now());
-      setCell(i, fallback);
+  const pick = (i: number) => {
+    if (!state || !playing || animating.current || !state.cells[i]) return;
+    setCursor(i);
+    setHint(null);
+    if (selected === null || state.cells[selected] !== state.cells[i]) {
+      setSelected(selected === i ? null : i);
       return;
     }
-    setCell(i, 2);
-  };
-
-  const tap = (i: number) => {
-    setSelected(i);
-    if (!editable(i)) return;
-    pushHistory();
-    if (cells[i] === 0) setCell(i, 1);
-    else if (cells[i] === 1) placeCat(i, 1);
-    else setCell(i, 0);
-  };
-
-  const mark = (i: number, mode: MarkMode, first: boolean) => {
-    if (!playing) return;
-    if (first) pushHistory();
-    setCells((cs) => cs.map((x, k) => (k !== i || locked[k] ? x : mode === "mark" && x === 0 ? 1 : mode === "erase" && x === 1 ? 0 : x)));
-  };
-
-  const togglePlace = () => {
-    if (!editable(selected)) return;
-    pushHistory();
-    if (cells[selected] === 2) setCell(selected, 0);
-    else placeCat(selected, cells[selected]);
-  };
-
-  const toggleMark = () => {
-    if (!editable(selected) || cells[selected] === 2) return;
-    pushHistory();
-    setCell(selected, cells[selected] === 1 ? 0 : 1);
-  };
-
-  const clear = () => {
-    if (!editable(selected) || cells[selected] === 0) return;
-    pushHistory();
-    setCell(selected, 0);
-  };
-
-  const clearMarks = () => {
-    if (!playing || !cells.includes(1)) return;
-    pushHistory();
-    setCells((cs) => cs.map((x) => (x === 1 ? 0 : x)));
-  };
-
-  const undo = () => {
-    const last = history.at(-1);
-    if (!last || !playing) return;
-    setCells(last);
-    setHistory((h) => h.slice(0, -1));
-  };
-
-  const hint = async () => {
-    if (!token || !playing || busy) return;
-    setBusy(true);
-    try {
-      const h = await api<HintResult>(`/api/levels/${levelId}/hint`, { method: "POST", body: { token, cats } });
-      setToken(h.token);
-      setHints(h.hints);
-      pushHistory();
-      if (h.kind === "remove") {
-        // Con mèo này đặt sai chỗ: gỡ ra và đánh dấu X.
-        setCell(h.idx, 1);
-        showFlash([h.idx]);
-      } else {
-        setCell(h.idx, 2);
-        setLocked((ls) => ls.map((x, k) => (k === h.idx ? true : x)));
-      }
-      setSelected(h.idx);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
+    if (selected === i) {
+      setSelected(null);
+      return;
     }
+    const res = playMove(spec, state, selected, i);
+    if (!res.ok) {
+      // Cùng loại nhưng không nối được (đường đi rẽ quá 2 lần hoặc bị chặn).
+      setFlash([selected, i]);
+      later(() => setFlash(null), 500);
+      setSelected(i);
+      return;
+    }
+    moves.current.push([selected, i]);
+    animating.current = true;
+    setPath(res.path);
+    setRemoving([selected, i]);
+    setSelected(null);
+    later(() => {
+      setState(res.state);
+      setPath(null);
+      setRemoving(null);
+      animating.current = false;
+      if (res.autoShuffled) showNotice("Hết nước đi, bàn đã được trộn lại.");
+    }, LINK_MS);
+  };
+
+  const showHint = () => {
+    if (!state || !playing || hintsLeft <= 0) return;
+    const m = findMove(state.cells, spec.rows, spec.cols);
+    if (!m) return;
+    setHint(m);
+    setHintsLeft((n) => n - 1);
+  };
+
+  const shuffle = () => {
+    if (!state || !playing || shufflesLeft <= 0 || animating.current) return;
+    moves.current.push(SHUFFLE_MOVE);
+    setState(shuffleBoard(spec, state));
+    setSelected(null);
+    setHint(null);
+    setShufflesLeft((n) => n - 1);
   };
 
   useBoardKeys({
-    size,
-    selected,
-    setSelected,
-    onTap: () => selected !== null && tap(selected),
-    onPlace: togglePlace,
-    onToggleMark: toggleMark,
-    onClear: clear,
-    onUndo: undo,
+    rows: spec.rows,
+    cols: spec.cols,
+    cursor,
+    setCursor,
+    onPick: () => cursor !== null && pick(cursor),
+    onHint: showHint,
+    onShuffle: shuffle,
     enabled: playing,
   });
 
-  // Tự nộp khi đã đủ mèo và không có xung đột.
+  // Hết giờ.
   useEffect(() => {
-    if (!level || !token || result || failed || submitted.current) return;
-    if (cats.length !== level.size || conflicts.size > 0) return;
+    if (!playing) return;
+    const t = setTimeout(() => setTimeUp(true), Math.max(0, startedAt + limitMs - Date.now()));
+    return () => clearTimeout(t);
+  }, [playing, startedAt, limitMs]);
+
+  // Xóa sạch bàn thì nộp toàn bộ nước đi để server chơi lại và ghi kết quả.
+  useEffect(() => {
+    if (!state || !token || result || submitted.current || !isCleared(state)) return;
     submitted.current = true;
     setBusy(true);
-    api<SubmitResult>(`/api/levels/${levelId}/submit`, { method: "POST", body: { token, cats } })
+    api<SubmitResult>(`/api/levels/${levelId}/submit`, { method: "POST", body: { token, moves: moves.current } })
       .then((r) => {
         setResult(r);
         refresh();
       })
-      .catch((e: Error) => {
-        submitted.current = false;
-        setError(e.message);
-      })
+      .catch((e: Error) => setError(e.message))
       .finally(() => setBusy(false));
-  }, [cats, conflicts, level, token, result, failed, levelId, refresh]);
+  }, [state, token, result, levelId, refresh]);
 
-  if (error && !level)
+  if (error && !state)
     return (
       <div className="py-16 text-center">
         <p className="text-lg font-bold">{error}</p>
@@ -243,62 +208,65 @@ function Game({ levelId, user }: { levelId: number; user: User }) {
         </Link>
       </div>
     );
-  if (!level) return <p className="py-16 text-center text-ink-soft">Đang bày bàn…</p>;
+  if (!state) return <p className="py-16 text-center text-ink-soft">Đang xếp mèo…</p>;
 
-  const catKind = ((levelId - 1) % 9) + 1;
+  const pairsLeft = remaining(state) / 2;
+  const total = (spec.rows * spec.cols) / 2;
 
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="flex w-full max-w-[min(92vw,520px)] items-center justify-between">
+    <div className="flex flex-col items-center gap-3">
+      <div className="flex w-full max-w-4xl items-end justify-between gap-3">
         <div>
           <Link href="/play" className="text-sm font-semibold text-ink-soft hover:text-ink">
             ‹ Bản đồ màn
           </Link>
           <h1 className="text-2xl font-black tracking-tight">Màn {levelId}</h1>
+          <p className="text-xs font-semibold text-ink-soft">
+            {spec.rows}×{spec.cols} · {GRAVITY_LABEL[visibleGravity(spec.gravity, transposed)]} · {best ? `Kỷ lục ${formatTime(best.time)}` : "Chưa có kỷ lục"}
+          </p>
         </div>
         <div className="text-right">
-          <Timer startedAt={startedAt} stoppedAt={result ? startedAt + result.timeMs : failedAt} />
-          <p className="text-xs font-semibold text-ink-soft">
-            {best ? `Kỷ lục ${formatTime(best.time)}` : "Chưa có kỷ lục"}
-            {hints > 0 && ` · ${hints} gợi ý`}
+          <Countdown startedAt={startedAt} limitMs={limitMs} stoppedAt={result ? startedAt + result.timeMs : timeUp ? startedAt + limitMs : null} />
+          <p className="text-xs font-semibold text-ink-soft tabular-nums">
+            Còn {pairsLeft}/{total} cặp
           </p>
         </div>
       </div>
 
-      <div className="flex w-full max-w-[min(92vw,520px)] items-center justify-between">
-        <span className="flex items-center gap-1.5 rounded-full bg-card px-3 py-1 font-extrabold tabular-nums" aria-label={`Đã đặt ${cats.length}/${size} mèo`}>
-          <CatIcon value={catKind} className="h-6 w-6" label="" />
-          {cats.length}/{size}
-        </span>
-        <Hearts left={hearts} />
+      <TimeBar startedAt={startedAt} limitMs={limitMs} stopped={!playing} />
+
+      <div className="relative w-full max-w-4xl">
+        <Board
+          rows={spec.rows}
+          cols={spec.cols}
+          cells={state.cells}
+          selected={selected}
+          cursor={cursor}
+          hint={hint}
+          flash={flash}
+          path={path}
+          removing={removing}
+          disabled={!playing}
+          onPick={pick}
+        />
+        {notice && (
+          <p className="pointer-events-none absolute inset-x-0 top-3 z-30 mx-auto w-fit rounded-full bg-ink px-4 py-1.5 text-sm font-bold text-paper" role="status">
+            {notice}
+          </p>
+        )}
       </div>
 
-      <Board
-        size={size}
-        regions={regions}
-        cells={cells}
-        locked={locked}
-        given={level.given}
-        selected={selected}
-        flash={flash}
-        catKind={catKind}
-        disabled={!playing}
-        onTap={tap}
-        onMark={mark}
-      />
-
-      <div className="grid w-full max-w-[min(92vw,520px)] grid-cols-4 gap-2">
-        <Tool label="Hoàn tác" onClick={undo} disabled={history.length === 0 || !playing} />
-        <Tool label="Xóa dấu X" onClick={clearMarks} disabled={!playing || !cells.includes(1)} />
-        <Tool label="Gợi ý" onClick={hint} disabled={busy || !playing} />
+      <div className="grid w-full max-w-md grid-cols-3 gap-2">
+        <Tool label={`Gợi ý (${hintsLeft})`} onClick={showHint} disabled={!playing || hintsLeft <= 0} />
+        <Tool label={`Trộn bàn (${shufflesLeft})`} onClick={shuffle} disabled={!playing || shufflesLeft <= 0} />
         <Tool label="Chơi lại" onClick={start} disabled={busy} />
       </div>
 
       {error && <p className="text-sm font-semibold text-bad-ink">{error}</p>}
 
-      <HowTo open={levelId <= 3} />
+      <HowTo open={levelId <= 2} />
 
-      {failed && !result && <FailedDialog onReplay={start} />}
+      {timeUp && !result && <TimeUpDialog onReplay={start} />}
       {result && (
         <ResultDialog
           result={result}
@@ -312,33 +280,45 @@ function Game({ levelId, user }: { levelId: number; user: User }) {
   );
 }
 
-function Hearts({ left }: { left: number }) {
+function useNow(active: boolean) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+function Countdown({ startedAt, limitMs, stoppedAt }: { startedAt: number; limitMs: number; stoppedAt: number | null }) {
+  const now = useNow(stoppedAt === null);
+  const left = Math.max(0, startedAt + limitMs - (stoppedAt ?? now));
+  return <p className={`text-2xl font-black tabular-nums ${left < 15000 ? "text-bad-ink" : ""}`}>{formatTime(Math.ceil(left / 1000) * 1000)}</p>;
+}
+
+function TimeBar({ startedAt, limitMs, stopped }: { startedAt: number; limitMs: number; stopped: boolean }) {
+  const now = useNow(!stopped);
+  const left = Math.max(0, 1 - (now - startedAt) / limitMs);
   return (
-    <span className="flex gap-1" aria-label={`Còn ${Math.max(0, left)}/${SOLO.hearts} tim`}>
-      {Array.from({ length: SOLO.hearts }, (_, i) => (
-        <svg key={`${i}-${i < left}`} viewBox="0 0 20 18" className={`h-6 w-6 ${i < left ? "" : "anim-pop"}`} aria-hidden>
-          <path
-            d="M10 17s-8-4.9-8-10.2C2 3.8 4.2 2 6.6 2c1.5 0 2.7.8 3.4 2 .7-1.2 1.9-2 3.4-2C15.8 2 18 3.8 18 6.8 18 12.1 10 17 10 17z"
-            fill={i < left ? "var(--yarn)" : "none"}
-            stroke={i < left ? "var(--yarn)" : "var(--grid-thin)"}
-            strokeWidth="1.6"
-          />
-        </svg>
-      ))}
-    </span>
+    <div className="h-2 w-full max-w-4xl overflow-hidden rounded-full bg-card" aria-hidden>
+      <div
+        className={`h-full rounded-full transition-[width] duration-300 ${left < 0.25 ? "bg-bad-ink" : left < 0.5 ? "bg-honey" : "bg-good"}`}
+        style={{ width: `${left * 100}%` }}
+      />
+    </div>
   );
 }
 
 function HowTo({ open }: { open: boolean }) {
   return (
-    <details open={open} className="w-full max-w-[min(92vw,520px)] rounded-2xl bg-card px-4 py-3 text-sm">
+    <details open={open} className="w-full max-w-md rounded-2xl bg-card px-4 py-3 text-sm">
       <summary className="cursor-pointer font-extrabold">Cách chơi</summary>
       <ul className="mt-2 list-disc space-y-1 pl-5 text-ink-soft">
-        <li>Mỗi hàng, mỗi cột và mỗi vùng màu có đúng một con mèo.</li>
-        <li>Hai con mèo không được đứng sát nhau, kể cả chéo góc.</li>
-        <li>Bấm một ô: lần 1 đánh dấu X (chắc chắn không có mèo), lần 2 đặt mèo, lần 3 xóa. Kéo qua nhiều ô để đánh X nhanh.</li>
-        <li>Đặt mèo vi phạm luật sẽ mất một tim. Hết {SOLO.hearts} tim thì phải chơi lại màn.</li>
-        <li>Bàn phím: mũi tên để di chuyển, Space như bấm ô, Enter đặt mèo, X đánh dấu, Ctrl+Z hoàn tác.</li>
+        <li>Bấm hai ô mèo giống hệt nhau để nối. Đường nối đi qua ô trống, rẽ tối đa 2 lần, và được vòng ra ngoài viền bàn.</li>
+        <li>Nối xong hai ô biến mất. Từ màn 2, các ô còn lại dồn theo kiểu của màn (xuống, lên, sang trái…).</li>
+        <li>Xóa sạch bàn trước khi hết giờ để qua màn. Còn nhiều thời gian thì được nhiều sao.</li>
+        <li>Mỗi màn có {SOLO.hints} lần gợi ý và {SOLO.shuffles} lần trộn bàn. Hết nước đi thì bàn tự trộn.</li>
+        <li>Bàn phím: mũi tên để di chuyển, Space chọn ô, H gợi ý, S trộn bàn.</li>
       </ul>
     </details>
   );
@@ -352,26 +332,16 @@ function Tool({ label, onClick, disabled }: { label: string; onClick: () => void
   );
 }
 
-function Timer({ startedAt, stoppedAt }: { startedAt: number; stoppedAt: number | null }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (stoppedAt) return;
-    const t = setInterval(() => setNow(Date.now()), 500);
-    return () => clearInterval(t);
-  }, [stoppedAt]);
-  return <p className="text-2xl font-black tabular-nums">{formatTime((stoppedAt ?? now) - startedAt)}</p>;
-}
-
-function FailedDialog({ onReplay }: { onReplay: () => void }) {
+function TimeUpDialog({ onReplay }: { onReplay: () => void }) {
   const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => ref.current?.focus(), []);
   return (
-    <div className="fixed inset-0 z-30 grid place-items-center bg-ink/40 p-4" role="dialog" aria-modal aria-labelledby="failed-title">
+    <div className="fixed inset-0 z-30 grid place-items-center bg-ink/40 p-4" role="dialog" aria-modal aria-labelledby="timeup-title">
       <div className="w-full max-w-sm rounded-3xl bg-card p-6 text-center shadow-2xl">
-        <h2 id="failed-title" className="text-3xl font-black tracking-tight">
-          Hết tim rồi
+        <h2 id="timeup-title" className="text-3xl font-black tracking-tight">
+          Hết giờ rồi
         </h2>
-        <p className="mt-2 text-ink-soft">Đặt mèo vi phạm luật {SOLO.hearts} lần. Thử lại màn này nhé.</p>
+        <p className="mt-2 text-ink-soft">Bàn chưa sạch mèo. Thử lại màn này nhé.</p>
         <div className="mt-5 flex flex-col gap-2">
           <button ref={ref} onClick={onReplay} className="rounded-2xl bg-yarn py-3 text-lg font-extrabold text-yarn-ink">
             Chơi lại
@@ -414,9 +384,7 @@ function ResultDialog({
           {result.newBest && !result.firstClear ? "Kỷ lục mới của bạn" : `Kỷ lục: ${formatTime(result.bestTime)}`}
           {result.rank ? `, hạng ${result.rank} ở màn này` : ""}
         </p>
-        {result.stars < 3 && (
-          <p className="mt-2 text-xs text-ink-soft">Giải nhanh hơn và không dùng gợi ý để được 3 sao.</p>
-        )}
+        {result.stars < 3 && <p className="mt-2 text-xs text-ink-soft">Xóa sạch bàn khi còn hơn nửa thời gian để được 3 sao.</p>}
 
         <div className="mt-5 flex flex-col gap-2">
           {result.nextLevel && (

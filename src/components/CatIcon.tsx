@@ -45,7 +45,55 @@ function Marks({ value }: { value: number }) {
   }
 }
 
-export function CatIcon({ value, className, label }: { value: number; className?: string; label?: string }) {
+/** Phụ kiện để tạo thêm biến thể: 0 không có, 1 nơ, 2 mũ, 3 kính. */
+function Accessory({ variant }: { variant: number }) {
+  switch (variant) {
+    case 1: // nơ trên tai phải
+      return (
+        <g>
+          <path d="M26 6.5l4.6 2.6-4.6 2.6zM35.2 6.5l-4.6 2.6 4.6 2.6z" fill="#E8457A" stroke={STROKE} strokeWidth="0.8" strokeLinejoin="round" />
+          <circle cx="30.6" cy="9.1" r="1.5" fill="#B3123F" />
+        </g>
+      );
+    case 2: // mũ lưỡi trai
+      return (
+        <g stroke={STROKE} strokeWidth="0.9" strokeLinejoin="round">
+          <path d="M11.5 12.5q8.5-9.5 17 0z" fill="#4A7BD0" />
+          <path d="M26 12.2q5 .2 7.4 1.6-4.8.9-8.6-.2z" fill="#2F5BA8" />
+          <circle cx="20" cy="5" r="1.3" fill="#F6E27A" />
+        </g>
+      );
+    case 3: // kính tròn
+      return (
+        <g fill="rgba(255,255,255,0.25)" stroke="#23264D" strokeWidth="1.3">
+          <circle cx="14.5" cy="22" r="4.2" />
+          <circle cx="25.5" cy="22" r="4.2" />
+          <path d="M18.7 22h2.6" fill="none" />
+        </g>
+      );
+    default:
+      return null;
+  }
+}
+
+/** Ô của game nối mèo: loại 1..36 = 9 chú mèo × 4 kiểu (màu nền ô và phụ kiện). */
+export function Tile({ kind, className }: { kind: number; className?: string }) {
+  const cat = ((kind - 1) % CATS.length) + 1;
+  const variant = Math.floor((kind - 1) / CATS.length);
+  return (
+    <span className={`grid h-full w-full place-items-center rounded-[18%] shadow-[0_2px_0_rgba(0,0,0,0.22)] ${className ?? ""}`} style={{ background: `var(--t${variant})` }}>
+      <CatIcon value={cat} variant={variant} className="h-[86%] w-[86%]" label="" />
+    </span>
+  );
+}
+
+export function tileName(kind: number): string {
+  const cat = CATS[(kind - 1) % CATS.length];
+  const variant = Math.floor((kind - 1) / CATS.length);
+  return `mèo ${cat.name}${["", " đeo nơ", " đội mũ", " đeo kính"][variant] ?? ""}`;
+}
+
+export function CatIcon({ value, variant = 0, className, label }: { value: number; variant?: number; className?: string; label?: string }) {
   const cat = CATS[value - 1];
   if (!cat) return null;
   const sleepy = value === 7;
@@ -70,6 +118,7 @@ export function CatIcon({ value, className, label }: { value: number; className?
       )}
       <path d="M18.4 27h3.2L20 29z" fill="#E8457A" />
       <path d="M20 29v1.2M20 30.2q-1.6 1.6-3.2.4M20 30.2q1.6 1.6 3.2.4" stroke="#23264D" strokeWidth="1" fill="none" strokeLinecap="round" />
+      <Accessory variant={variant} />
     </svg>
   );
 }
