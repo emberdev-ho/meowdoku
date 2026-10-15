@@ -1,0 +1,33 @@
+{
+  "name": "meowdoku",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "levels:generate": "tsx scripts/generate-levels.ts",
+    "db:indexes": "tsx scripts/create-indexes.ts",
+    "lb:rebuild": "tsx scripts/rebuild-leaderboards.ts"
+  },
+  "dependencies": {
+    "@upstash/redis": "1.39.0",
+    "jose": "6.2.12",
+    "mongodb": "7.7.0",
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "4.3.3",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "dotenv": "^16.4.0"
+  }
+}

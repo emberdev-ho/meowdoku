@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #e8eaf7;
+  --card: #ffffff;
+  --ink: #23264d;
+  --ink-soft: #5b6090;
+  --grid-thin: #cdd1ea;
+  --grid-bold: #23264d;
+  --given: #eef0fa;
+  --peer: #f2f4ff;
+  --select: #cbd3ff;
+  --same: #e2e6ff;
+  --yarn: #e8457a;
+  --yarn-ink: #ffffff;
+  --honey: #f2a93b;
+  --bad: #ffd3dc;
+  --bad-ink: #b3123f;
+  --good: #23885e;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #161931;
+    --card: #20244a;
+    --ink: #e8eaf7;
+    --ink-soft: #a2a7d0;
+    --grid-thin: #363b6b;
+    --grid-bold: #c9cdf0;
+    --given: #2a2f5c;
+    --peer: #252a55;
+    --select: #3d4596;
+    --same: #303772;
+    --yarn: #ff6b9a;
+    --yarn-ink: #1a1030;
+    --honey: #f5b95a;
+    --bad: #6b2a40;
+    --bad-ink: #ffb3c6;
+    --good: #5fd3a0;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-grid-thin: var(--grid-thin);
+  --color-grid-bold: var(--grid-bold);
+  --color-given: var(--given);
+  --color-peer: var(--peer);
+  --color-select: var(--select);
+  --color-same: var(--same);
+  --color-yarn: var(--yarn);
+  --color-yarn-ink: var(--yarn-ink);
+  --color-honey: var(--honey);
+  --color-bad: var(--bad);
+  --color-bad-ink: var(--bad-ink);
+  --color-good: var(--good);
+  --font-sans: ui-rounded, "SF Pro Rounded", "Nunito", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+:focus-visible {
+  outline: 3px solid var(--yarn);
+  outline-offset: 2px;
+}
+
+@keyframes pop {
+  0% { transform: scale(0.6); }
+  70% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+@keyframes tick {
+  0% { transform: scale(1.4); opacity: 0; }
+  30% { opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.anim-pop { animation: pop 180ms ease-out; }
+.anim-shake { animation: shake 240ms ease-in-out 2; }
+.anim-tick { animation: tick 600ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-pop, .anim-shake, .anim-tick { animation: none; }
+}
