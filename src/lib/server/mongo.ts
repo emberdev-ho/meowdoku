@@ -49,7 +49,12 @@ function clientPromise(): Promise<MongoClient> {
   if (!g._mongo) {
     const uri = process.env.MONGODB_URI;
     if (!uri) throw new Error("Thiếu biến môi trường MONGODB_URI");
-    g._mongo = new MongoClient(uri, { maxPoolSize: 5 }).connect();
+    // Kết nối hỏng thì bỏ cache để request sau thử lại, thay vì lỗi mãi tới khi
+    // Vercel khởi động lại hàm. Chờ tối đa 10 giây thay vì 30 giây mặc định.
+    g._mongo = new MongoClient(uri, { maxPoolSize: 5, serverSelectionTimeoutMS: 10_000 }).connect().catch((err) => {
+      g._mongo = undefined;
+      throw err;
+    });
   }
   return g._mongo;
 }
